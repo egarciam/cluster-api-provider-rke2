@@ -8,14 +8,15 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
-
-	corev1 "k8s.io/api/core/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -80,9 +81,62 @@ func getWorkloadKubeconfig(managementClient ctrlclient.Client, clusterName, name
 	return kubernetes.NewForConfig(config)
 }
 
+func createNamespaceIfNotExists(clientset *kubernetes.Clientset, namespaceName string) error {
+	// Define the namespace object
+	testNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: namespaceName,
+		},
+	}
+
+	// Attempt to create the namespace
+	_, err := clientset.CoreV1().Namespaces().Create(context.TODO(), testNS, metav1.CreateOptions{})
+	if err != nil {
+		// If the namespace already exists, ignore the error
+		if errors.IsAlreadyExists(err) {
+			fmt.Printf("Namespace %q already exists, skipping creation\n", namespaceName)
+			return nil
+		}
+		// For any other error, return it
+		return fmt.Errorf("failed to create namespace %q: %v", namespaceName, err)
+	}
+
+	fmt.Printf("Namespace %q created successfully\n", namespaceName)
+	return nil
+}
+
+func getWorkloadRestKubeconfig(managementClient ctrlclient.Client, clusterName, namespace string) (*rest.Config, error) {
+	// Fetch the kubeconfig secret from the management cluster
+	secret := &corev1.Secret{}
+	err := managementClient.Get(
+		context.TODO(),
+		ctrlclient.ObjectKey{
+			Name:      fmt.Sprintf("%s-kubeconfig", clusterName),
+			Namespace: namespace,
+		},
+		secret,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch workload cluster kubeconfig: %v", err)
+	}
+
+	// Load the kubeconfig from the secret
+	config, err := clientcmd.RESTConfigFromKubeConfig(secret.Data["value"])
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse workload cluster kubeconfig: %v", err)
+	}
+
+	// Create a Kubernetes client for the workload cluster
+	return config, nil
+}
+
 // testNetworkConnectivity runs "nc -z -w 5 <targetIP> 80" inside the source pod to test network connectivity.
-func testNetworkConnectivity(clientset *kubernetes.Clientset, config *rest.Config, sourcePod *v1.Pod, targetIP string) error {
-	cmd := []string{"nc", "-z", "-w", "5", targetIP, "80"}
+func testNetworkConnectivity(config *rest.Config, sourcePod *v1.Pod, targetIP string) error {
+	cmd := []string{"nc", "-v", "-z", "-w", "5", targetIP, "80"}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
 	req := clientset.CoreV1().RESTClient().
 		Post().
 		Resource("pods").
@@ -101,8 +155,16 @@ func testNetworkConnectivity(clientset *kubernetes.Clientset, config *rest.Confi
 		return fmt.Errorf("failed to create SPDY executor: %w", err)
 	}
 
-	var stdout, stderr bytes.Buffer
-	err = exec.Stream(remotecommand.StreamOptions{
+	var stdin, stdout, stderr bytes.Buffer
+
+	// err = exec.Stream(remotecommand.StreamOptions{
+	// 	Stdin:  &stdin,
+	// 	Stdout: &stdout,
+	// 	Stderr: &stderr,
+	// })
+
+	err = exec.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
+		Stdin:  &stdin,
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
@@ -117,6 +179,23 @@ func testNetworkConnectivity(clientset *kubernetes.Clientset, config *rest.Confi
 
 	return nil
 }
+
+// func testNetworkConnectivity(config *rest.Config, sourcePod *corev1.Pod, targetIP string) error {
+
+// 	// cmd := []string{"nc", "-v", "-z", "-w", "5", targetIP, "80"}
+// 	// clientset, err := kubernetes.NewForConfig(config)
+// 	// if err != nil {
+// 	// 	return err
+// 	// }
+// 	_, err := workloadClient.CoreV1().Pods(sourcePod.Namespace).Exec(
+// 		context.TODO(),
+// 		sourcePod.Name,
+// 		&corev1.PodExecOptions{
+// 			Command: []string{"nc", "-z", "-w", "5", targetIP, "80"},
+// 		},
+// 	)
+// 	return err
+// }
 
 // Helper functions
 func createNetworkTestPod(name, namespace string) *corev1.Pod {
@@ -133,12 +212,40 @@ func createNetworkTestPod(name, namespace string) *corev1.Pod {
 			}},
 		},
 	}
+	// createdPod, err := workloadClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+	// err = func() error {
 	createdPod, err := workloadClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil // Ignore "already exists" error
+	}
+	// 	return err // Return other errors
+	// // }()
+	// if apierrors.IsAlreadyExists(err) {
+	// 	err = nil // Ignore "already exists" error
+	// }
 	Expect(err).NotTo(HaveOccurred())
-	Eventually(func() corev1.PodPhase {
-		p, _ := workloadClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-		return p.Status.Phase
-	}, 2*time.Minute, 5*time.Second).Should(Equal(corev1.PodRunning))
+	// Eventually(func() corev1.PodPhase {
+	// 	p, _ := workloadClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	// 	return p.Status.Phase
+	// }, 2*time.Minute, 5*time.Second).Should(Equal(corev1.PodRunning))
+
+	var podIP string
+	Eventually(func() bool {
+		p, err := workloadClient.CoreV1().Pods(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		// Check if the pod is Running and has an IP address
+		if p.Status.Phase == corev1.PodRunning && p.Status.PodIP != "" {
+			podIP = p.Status.PodIP
+			return true
+		}
+		return false
+	}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "Pod did not reach Running state or get an IP address")
+
+	// Update the createdPod object with the IP address
+	createdPod.Status.PodIP = podIP
+
 	return createdPod
 }
 

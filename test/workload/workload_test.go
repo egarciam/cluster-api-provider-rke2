@@ -20,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,10 +30,6 @@ const (
 	interval    = 10 * time.Second // Interval between checks
 	clusterName = "bm-osp"
 	namespace   = "capi-test-infra-docker"
-)
-
-var (
-	wc_cfg *rest.Config
 )
 
 func TestE2E(t *testing.T) {
@@ -150,10 +145,12 @@ var _ = Describe("Network Connectivity", func() {
 
 		// Deploy test pods
 		serverPod := createNetworkTestPod("server", "network-test")
+		By(fmt.Sprintf("Creating [%s]client pod in [%s] namespace with ip: [%s]", serverPod.Name, serverPod.Namespace, serverPod.Status.PodIP))
 		defer workloadClient.CoreV1().Pods("network-test").Delete(context.TODO(), "server", metav1.DeleteOptions{})
 		clientPod := createNetworkTestPod("client", "default")
+		By(fmt.Sprintf("And creating [%s]client pod in [%s] namespace with ip: [%s]", clientPod.Name, clientPod.Namespace, clientPod.Status.PodIP))
 		defer workloadClient.CoreV1().Pods("default").Delete(context.TODO(), "client", metav1.DeleteOptions{})
-
+		By("And creating net pol that blocks ingress to 'network-test' ns")
 		// Create restrictive network policy
 		policy := &networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "deny-cross-ns", Namespace: "network-test"},
@@ -178,7 +175,7 @@ var _ = Describe("Network Connectivity", func() {
 		// Eventually(func() error {
 		// 	return testNetworkConnectivity(kubeconfig, clientPod, serverPod.Status.PodIP /*sourcePod*/)
 		// }, 15*time.Second, 5*time.Second).ShouldNot(HaveOccurred(), "Network connectivity test failed")
-
+		By("pinging is not allowed")
 		//Test ping
 		Eventually(func() error {
 			//return execPing(kubeconfig, clientPod.Namespace, clientPod.Name, serverPod.Status.PodIP)
@@ -191,17 +188,19 @@ var _ = Describe("Network Connectivity", func() {
 		// 	return testNetworkConnectivity(clientPod, kubeconfig, serverPod /*.Status.PodIP*/)
 		// }, 2*time.Minute, 5*time.Second).Should(HaveOccurred())
 
+		By("deleting netpol")
 		// Cleanup policy and verify restored connectivity
 		Expect(workloadClient.NetworkingV1().NetworkPolicies("network-test").Delete(context.TODO(), "deny-cross-ns", metav1.DeleteOptions{})).To(Succeed())
 		// Eventually(func() error {
 		// 	return testNetworkConnectivity(clientPod, serverPod)
 		// }, 2*time.Minute, 5*time.Second).Should(Succeed())
-		//Test ping
+		//Test ping again
+		By("ping is allowed again")
 		Eventually(func() error {
 			//return execPing(kubeconfig, clientPod.Namespace, clientPod.Name, serverPod.Status.PodIP)
 			return ExecToPodThroughAPI(kubeconfig, clientPod, serverPod, nil)
 
 			//}, 15*time.Second, 5*time.Second).ShouldNot(HaveOccurred(), "Network ExecPing connectivity test failed")
-		}, 60*time.Second, 5*time.Second).Should(Succeed(), "Network ExecPing connectivity test failed")
+		}, 60*time.Second, 5*time.Second).Should(Succeed(), "Network ExecPing connectivity test succeded")
 	})
 })

@@ -111,6 +111,7 @@ func ExecToPodThroughAPI(config *rest.Config, clientPod, serverPod *corev1.Pod, 
 	if err != nil {
 		return fmt.Errorf("error in Stream: %v", err)
 	}
+	fmt.Println("Output: ", stdout.String())
 
 	return nil
 }

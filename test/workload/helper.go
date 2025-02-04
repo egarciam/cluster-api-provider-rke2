@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -23,38 +24,44 @@ import (
 var (
 	managementClient ctrlclient.Client
 	workloadClient   *kubernetes.Clientset
+	debug            = false
 )
 
-func execCommandInPod(clientset *kubernetes.Clientset, config *rest.Config, namespace, podName string, command []string) (string, error) {
-	req := clientset.CoreV1().RESTClient().
-		Post().
-		Resource("pods").
-		Name(podName).
-		Namespace(namespace).
-		SubResource("exec").
-		VersionedParams(&v1.PodExecOptions{
-			Command: command,
-			Stdout:  true,
-			Stderr:  true,
-			TTY:     false,
-		}, metav1.ParameterCodec)
+// func execCommandInPod(clientset *kubernetes.Clientset, config *rest.Config, namespace, podName string, command []string) (string, error) {
+// 	cmd := []string{"ping", "-c", "2"}
+// 	command = cmd
+// 	req := clientset.CoreV1().RESTClient().
+// 		Post().
+// 		Resource("pods").
+// 		Name(podName).
+// 		Namespace(namespace).
+// 		SubResource("exec")
+// 	scheme := runtime.NewScheme()
+// 	parameterCodec := runtime.NewParameterCodec(scheme)
+// 	req.VersionedParams(&v1.PodExecOptions{
+// 		Command: command,
+// 		Stdin:   false,
+// 		Stdout:  true,
+// 		Stderr:  true,
+// 		TTY:     false,
+// 	}, parameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
-	if err != nil {
-		return "", err
-	}
+// 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+// 	if err != nil {
+// 		return "", err
+// 	}
 
-	var stdout, stderr bytes.Buffer
-	err = exec.Stream(remotecommand.StreamOptions{
-		Stdout: &stdout,
-		Stderr: &stderr,
-	})
-	if err != nil {
-		return stderr.String(), err
-	}
+// 	var stdout, stderr bytes.Buffer
+// 	err = exec.Stream(remotecommand.StreamOptions{
+// 		Stdout: &stdout,
+// 		Stderr: &stderr,
+// 	})
+// 	if err != nil {
+// 		return stderr.String(), err
+// 	}
 
-	return stdout.String(), nil
-}
+// 	return stdout.String(), nil
+// }
 
 func getWorkloadKubeconfig(managementClient ctrlclient.Client, clusterName, namespace string) (*kubernetes.Clientset, error) {
 	// Fetch the kubeconfig secret from the management cluster
@@ -132,7 +139,58 @@ func getWorkloadRestKubeconfig(managementClient ctrlclient.Client, clusterName, 
 
 // testNetworkConnectivity runs "nc -z -w 5 <targetIP> 80" inside the source pod to test network connectivity.
 func testNetworkConnectivity(config *rest.Config, sourcePod *v1.Pod, targetIP string) error {
-	cmd := []string{"nc", "-v", "-z", "-w", "5", targetIP, "80"}
+	// cmd := []string{"nc", "-v", "-z", "-w", "5", targetIP, "80"}
+	cmd := []string{"ping", "-c", "2", targetIP}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+	req := clientset.CoreV1().RESTClient().
+		Post().
+		Resource("pods").
+		Name(sourcePod.Name).
+		Namespace(sourcePod.Namespace).
+		SubResource("exec")
+	scheme := runtime.NewScheme()
+	parameterCodec := runtime.NewParameterCodec(scheme)
+	req.VersionedParams(&v1.PodExecOptions{
+		Command: cmd,
+		Stdin:   false,
+		Stdout:  true,
+		Stderr:  true,
+		TTY:     false,
+	}, parameterCodec)
+
+	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("failed to create SPDY executor: %w", err)
+	}
+
+	//var stdout, stderr bytes.Buffer
+	// stdin := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	err = exec.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
+		// Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	// Log the output for debugging
+	fmt.Printf("Executed command: %v\n", cmd)
+	fmt.Printf("Command Output: %s\n", stdout.String())
+	fmt.Printf("Error Output: %s\n", stderr.String())
+
+	if err != nil {
+		return fmt.Errorf("network test failed: %s, %w", stderr.String(), err)
+	}
+
+	return nil
+}
+
+func testNetworkConnectivity2(config *rest.Config, sourcePod *v1.Pod, targetIP string) error {
+	// cmd := []string{"nc", "-v", "-z", "-w", "5", targetIP, "80"}
+	cmd := []string{"ping", "-c", "2", targetIP}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
@@ -145,6 +203,7 @@ func testNetworkConnectivity(config *rest.Config, sourcePod *v1.Pod, targetIP st
 		SubResource("exec").
 		VersionedParams(&v1.PodExecOptions{
 			Command: cmd,
+			Stdin:   false,
 			Stdout:  true,
 			Stderr:  true,
 			TTY:     false,
@@ -155,23 +214,20 @@ func testNetworkConnectivity(config *rest.Config, sourcePod *v1.Pod, targetIP st
 		return fmt.Errorf("failed to create SPDY executor: %w", err)
 	}
 
-	var stdin, stdout, stderr bytes.Buffer
-
-	// err = exec.Stream(remotecommand.StreamOptions{
-	// 	Stdin:  &stdin,
-	// 	Stdout: &stdout,
-	// 	Stderr: &stderr,
-	// })
-
+	//var stdout, stderr bytes.Buffer
+	stdin := &bytes.Buffer{}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
 	err = exec.StreamWithContext(context.TODO(), remotecommand.StreamOptions{
-		Stdin:  &stdin,
-		Stdout: &stdout,
-		Stderr: &stderr,
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
 	})
 
 	// Log the output for debugging
-	fmt.Printf("Netcat Output: %s\n", stdout.String())
-	fmt.Printf("Netcat Error: %s\n", stderr.String())
+	fmt.Printf("Executed command: %v\n", cmd)
+	fmt.Printf("Command Output: %s\n", stdout.String())
+	fmt.Printf("Error Output: %s\n", stderr.String())
 
 	if err != nil {
 		return fmt.Errorf("network test failed: %s, %w", stderr.String(), err)

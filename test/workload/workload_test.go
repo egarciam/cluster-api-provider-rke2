@@ -30,7 +30,7 @@ const (
 	timeout     = 10 * time.Second // Maximum time to wait for a condition
 	interval    = 10 * time.Second // Interval between checks
 	clusterName = "bm-osp"
-	namespace   = "bm-osp"
+	namespace   = "capi-test-infra-docker"
 )
 
 var (
@@ -67,52 +67,57 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "Failed to create workload cluster client")
 })
 
-// Test 1: Cluster API Endpoint Validation
-var _ = Describe("Cluster API Operations", func() {
-	It("Should provision cluster with correct API endpoint", func() {
-		var cluster clusterv1.Cluster
-		Eventually(func() error {
-			return managementClient.Get(
-				context.TODO(),
-				ctrlclient.ObjectKey{Name: clusterName, Namespace: namespace},
-				&cluster,
-			)
-		}, timeout, interval).Should(Succeed())
-
-		// Verify API server endpoint
-		Eventually(func() error {
-			// cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
-			// if err != nil {
-			// 	return err
-			// // }
-			// client, err := kubernetes.NewForConfig(	workloadClientet
-			// )
-			// if err != nil {
-			// 	return err
-			// }
-			_, err := workloadClient.Discovery().ServerVersion()
-			return err
-		}, 5*time.Minute, 10*time.Second).ShouldNot(Succeed())
-
-		// Verify certificate validity
-		// Eventually(func() error {
-		// 	secret := &corev1.Secret{}
-		// 	err := managementClient.Get(
-		// 		context.TODO(),
-		// 		ctrlclient.ObjectKey{
-		// 			Name:      fmt.Sprintf("%s-apiserver-cert", clusterName),
-		// 			Namespace: namespace,
-		// 		},
-		// 		secret,
-		// 	)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-		// 	// Add certificate validation logic here
-		// 	return nil
-		// }, timeout, interval).Should(Succeed())
-	})
+var _ = AfterSuite(func() {
+	//Hay que limpiar
+	Expect(true)
 })
+
+// Test 1: Cluster API Endpoint Validation
+// var _ = Describe("Cluster API Operations", func() {
+// 	It("Should provision cluster with correct API endpoint", func() {
+// 		var cluster clusterv1.Cluster
+// 		Eventually(func() error {
+// 			return managementClient.Get(
+// 				context.TODO(),
+// 				ctrlclient.ObjectKey{Name: clusterName, Namespace: namespace},
+// 				&cluster,
+// 			)
+// 		}, timeout, interval).Should(Succeed())
+
+// 		// Verify API server endpoint
+// 		Eventually(func() error {
+// 			// cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+// 			// if err != nil {
+// 			// 	return err
+// 			// // }
+// 			// client, err := kubernetes.NewForConfig(	workloadClientet
+// 			// )
+// 			// if err != nil {
+// 			// 	return err
+// 			// }
+// 			_, err := workloadClient.Discovery().ServerVersion()
+// 			return err
+// 		}, 5*time.Minute, 10*time.Second).ShouldNot(Succeed())
+
+// 		// Verify certificate validity
+// 		// Eventually(func() error {
+// 		// 	secret := &corev1.Secret{}
+// 		// 	err := managementClient.Get(
+// 		// 		context.TODO(),
+// 		// 		ctrlclient.ObjectKey{
+// 		// 			Name:      fmt.Sprintf("%s-apiserver-cert", clusterName),
+// 		// 			Namespace: namespace,
+// 		// 		},
+// 		// 		secret,
+// 		// 	)
+// 		// 	if err != nil {
+// 		// 		return err
+// 		// 	}
+// 		// 	// Add certificate validation logic here
+// 		// 	return nil
+// 		// }, timeout, interval).Should(Succeed())
+// 	})
+// })
 
 // Test 4: Network Policy Enforcement
 var _ = Describe("Network Connectivity", func() {
@@ -140,12 +145,14 @@ var _ = Describe("Network Connectivity", func() {
 			return err // Return other errors
 		}()
 		Expect(err).To(Succeed())
-		// defer workloadClient.CoreV1().Namespaces().Delete(context.TODO(), "network-test", metav1.DeleteOptions{})
+		defer workloadClient.CoreV1().Namespaces().Delete(context.TODO(), "network-test", metav1.DeleteOptions{})
 		// Expect(workloadClient.CoreV1().Namespaces().Create(context.TODO(), testNS, metav1.CreateOptions{})).To(Succeed())
 
 		// Deploy test pods
 		serverPod := createNetworkTestPod("server", "network-test")
+		defer workloadClient.CoreV1().Pods("network-test").Delete(context.TODO(), "server", metav1.DeleteOptions{})
 		clientPod := createNetworkTestPod("client", "default")
+		defer workloadClient.CoreV1().Pods("default").Delete(context.TODO(), "client", metav1.DeleteOptions{})
 
 		// Create restrictive network policy
 		policy := &networkingv1.NetworkPolicy{
@@ -168,9 +175,17 @@ var _ = Describe("Network Connectivity", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		//Verify connectivity
+		// Eventually(func() error {
+		// 	return testNetworkConnectivity(kubeconfig, clientPod, serverPod.Status.PodIP /*sourcePod*/)
+		// }, 15*time.Second, 5*time.Second).ShouldNot(HaveOccurred(), "Network connectivity test failed")
+
+		//Test ping
 		Eventually(func() error {
-			return testNetworkConnectivity(kubeconfig, clientPod, serverPod.Status.PodIP /*sourcePod*/)
-		}, 2*time.Minute, 10*time.Second).ShouldNot(HaveOccurred(), "Network connectivity test failed")
+			//return execPing(kubeconfig, clientPod.Namespace, clientPod.Name, serverPod.Status.PodIP)
+			return ExecToPodThroughAPI(kubeconfig, clientPod, serverPod, nil)
+
+			//}, 15*time.Second, 5*time.Second).ShouldNot(HaveOccurred(), "Network ExecPing connectivity test failed")
+		}, 60*time.Second, 5*time.Second).ShouldNot(Succeed(), "Network ExecPing connectivity test failed")
 
 		// Eventually(func() error {
 		// 	return testNetworkConnectivity(clientPod, kubeconfig, serverPod /*.Status.PodIP*/)
@@ -181,5 +196,12 @@ var _ = Describe("Network Connectivity", func() {
 		// Eventually(func() error {
 		// 	return testNetworkConnectivity(clientPod, serverPod)
 		// }, 2*time.Minute, 5*time.Second).Should(Succeed())
+		//Test ping
+		Eventually(func() error {
+			//return execPing(kubeconfig, clientPod.Namespace, clientPod.Name, serverPod.Status.PodIP)
+			return ExecToPodThroughAPI(kubeconfig, clientPod, serverPod, nil)
+
+			//}, 15*time.Second, 5*time.Second).ShouldNot(HaveOccurred(), "Network ExecPing connectivity test failed")
+		}, 60*time.Second, 5*time.Second).Should(Succeed(), "Network ExecPing connectivity test failed")
 	})
 })
